@@ -34,7 +34,7 @@ class DigestController():
 
         if(random_num <= self.min_threshold):
          new_threshold = random_num
-         print ("No change in the threshold :" , new_threshold)
+         print ("No change in the threshold :")
         
         elif( random_num > self.min_threshold and random_num <= self.global_threshold):
 
@@ -49,7 +49,7 @@ class DigestController():
             new_threshold = self.local_threshold
             # for i in range(len(flow_rules)):
             #  self.update_threshold(new_threshold, flow_rules[i])
-            print ("The New Theshold since croosed the global threshold hence we can safely say this was  :" , new_threshold)    
+            print ("The New Theshold since croosed the global threshold hence we can safely say this was an attack, hence resetting the threshold to : " , new_threshold)    
 
         self.controller.client.bm_learning_ack_buffer(ctx_id, list_id, buffer_id)
 
