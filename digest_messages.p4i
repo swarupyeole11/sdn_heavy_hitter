@@ -803,6 +803,11 @@ package V1Switch<H, M>(Parser<H, M> p,
 # 6 "digest_messages.p4" 2
 
 const bit<16> TYPE_IPV4 = 0x800;
+const bit<8> TYPE_TCP = 6;
+
+
+
+
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -833,20 +838,50 @@ header ipv4_t {
     ip4Addr_t dstAddr;
 }
 
+header tcp_t{
+    bit<16> srcPort;
+    bit<16> dstPort;
+    bit<32> seqNo;
+    bit<32> ackNo;
+    bit<4> dataOffset;
+    bit<4> res;
+    bit<1> cwr;
+    bit<1> ece;
+    bit<1> urg;
+    bit<1> ack;
+    bit<1> psh;
+    bit<1> rst;
+    bit<1> syn;
+    bit<1> fin;
+    bit<16> window;
+    bit<16> checksum;
+    bit<16> urgentPtr;
+
+}
+
 
 struct learn_t {
-    bit<8> digest;
+    bit<32> digest;
     bit<32> srcIP;
     bit<32> dstIP;
 }
 
 struct metadata {
+
+    bit<32> output_hash_one;
+    bit<32> output_hash_two;
+
+    bit<32> counter_one;
+
+    bit<32> PACKET_THRESHOLD;
+
     learn_t learn;
 }
 
 struct headers {
     ethernet_t ethernet;
     ipv4_t ipv4;
+    tcp_t tcp;
 }
 
 /*************************************************************************
@@ -872,7 +907,16 @@ parser MyParser(packet_in packet,
     state ipv4 {
 
         packet.extract(hdr.ipv4);
-        transition accept;
+
+        transition select(hdr.ipv4.protocol){
+            TYPE_TCP: tcp;
+            default: accept;
+        }
+    }
+
+    state tcp {
+       packet.extract(hdr.tcp);
+       transition accept;
     }
 
 }
@@ -895,8 +939,46 @@ control MyIngress(inout headers hdr,
                   inout metadata meta,
                   inout standard_metadata_t standard_metadata) {
 
+
+    // Read the threshold from flow rules
+    action rcv_threshold( bit<32> threshold) {
+        meta.PACKET_THRESHOLD = threshold;
+    }
+
+    register<bit<32>>(4096) bloom_filter;
+
+
     action drop() {
         mark_to_drop(standard_metadata);
+    }
+
+    action _update_bloom_filter(){
+
+
+       //Get register position
+
+       hash(meta.output_hash_one, HashAlgorithm.crc16, (bit<16>)0, {hdr.ipv4.srcAddr,
+                                                          hdr.ipv4.dstAddr,
+                                                          hdr.tcp.srcPort,
+                                                          hdr.tcp.dstPort,
+                                                          hdr.ipv4.protocol},
+                                                          (bit<32>)4096);
+
+       hash(meta.output_hash_two, HashAlgorithm.crc32, (bit<16>)0, {hdr.ipv4.srcAddr,
+                                                          hdr.ipv4.dstAddr,
+                                                          hdr.tcp.srcPort,
+                                                          hdr.tcp.dstPort,
+                                                          hdr.ipv4.protocol},
+                                                          (bit<32>)4096);
+
+
+        //Read counters
+        bloom_filter.read(meta.counter_one, meta.output_hash_one);
+
+        meta.counter_one = meta.counter_one + 1;
+
+        //write counters
+        bloom_filter.write(meta.output_hash_one, meta.counter_one);
     }
 
     action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
@@ -912,7 +994,9 @@ control MyIngress(inout headers hdr,
 
         //decrease ttl by 1
         hdr.ipv4.ttl = hdr.ipv4.ttl -1;
-        random(meta.learn.digest,(bit<8>) 0, (bit<8>) 255);
+
+        // Set digest message values
+        meta.learn.digest = meta.counter_one;
         meta.learn.srcIP = hdr.ipv4.srcAddr;
         meta.learn.dstIP = hdr.ipv4.dstAddr;
 
@@ -933,11 +1017,51 @@ control MyIngress(inout headers hdr,
         default_action = NoAction();
     }
 
-    apply {
-        //only if IPV4 the rule is applied. Therefore other packets will not be forwarded.
-        if (hdr.ipv4.isValid()){
-            ipv4_lpm.apply();
 
+    table update_bloom_filter{
+
+        actions = {
+            _update_bloom_filter;
+        }
+        size = 1;
+        default_action = _update_bloom_filter();
+    }
+
+    table drop_table{
+        actions = {
+            drop;
+        }
+        size =1;
+        default_action = drop();
+    }
+
+    table thresh {
+        key = {
+            hdr.ipv4.dstAddr: lpm;
+        }
+        actions = {
+            rcv_threshold;
+            drop;
+            NoAction;
+        }
+        size = 1024;
+        default_action = NoAction();
+    }
+
+
+    apply {
+       thresh.apply();
+        if (hdr.ipv4.isValid()){
+            if (hdr.tcp.isValid()){
+                update_bloom_filter.apply();
+                //only if IPV4 the rule is applied. Therefore other packets will not be forwarded.
+                if ( (meta.counter_one > meta.PACKET_THRESHOLD) ){
+                    drop_table.apply();
+                    return;
+                }
+
+            }
+            ipv4_lpm.apply();
         }
     }
 }
@@ -950,9 +1074,7 @@ control MyEgress(inout headers hdr,
                  inout metadata meta,
                  inout standard_metadata_t standard_metadata) {
 
-    apply {
-
-    }
+    apply { }
 }
 
 /*************************************************************************
@@ -990,7 +1112,7 @@ control MyDeparser(packet_out packet, in headers hdr) {
         //parsed headers have to be added again into the packet.
         packet.emit(hdr.ethernet);
         packet.emit(hdr.ipv4);
-
+        packet.emit(hdr.tcp);
     }
 }
 

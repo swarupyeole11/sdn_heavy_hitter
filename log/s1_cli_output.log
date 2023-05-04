@@ -1,6 +1,16 @@
 Obtaining JSON from switch...
 Done
 Control utility for runtime P4 table manipulation
+RuntimeCmd: Adding entry to lpm match table MyIngress.thresh
+match key:           LPM-0a:00:01:01/32
+action:              rcv_threshold
+runtime data:        00:00:05:dc
+Entry has been added with handle 0
+RuntimeCmd: Adding entry to lpm match table MyIngress.thresh
+match key:           LPM-0a:00:01:02/32
+action:              rcv_threshold
+runtime data:        00:00:05:dc
+Entry has been added with handle 1
 RuntimeCmd: Setting default action of ipv4_lpm
 action:              drop
 runtime data:        
